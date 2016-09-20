@@ -690,6 +690,28 @@ class ZeroMQPubServerChannel(salt.transport.server.PubServerChannel):
         self.serial = salt.payload.Serial(self.opts)  # TODO: in init?
         self.ckminions = salt.utils.minions.CkMinions(self.opts)
 
+        # Send 0MQ to the publisher
+        context = zmq.Context(1)
+        self.context = context
+        self.pub_sock = context.socket(zmq.PUSH)
+        if self.opts.get('ipc_mode', '') == 'tcp':
+            pull_uri = 'tcp://127.0.0.1:{0}'.format(
+                self.opts.get('tcp_master_publish_pull', 4514)
+                )
+        else:
+            pull_uri = 'ipc://{0}'.format(
+                os.path.join(self.opts['sock_dir'], 'publish_pull.ipc')
+                )
+        self.pub_sock.connect(pull_uri)
+
+
+    def __del__(self):
+        self.destroy()
+
+    def destroy(self):
+        self.pub_sock.close()
+        self.context.term()
+
     def connect(self):
         return tornado.gen.sleep(5)
 
@@ -807,18 +829,7 @@ class ZeroMQPubServerChannel(salt.transport.server.PubServerChannel):
             master_pem_path = os.path.join(self.opts['pki_dir'], 'master.pem')
             log.debug("Signing data packet")
             payload['sig'] = salt.crypt.sign_message(master_pem_path, payload['load'])
-        # Send 0MQ to the publisher
-        context = zmq.Context(1)
-        pub_sock = context.socket(zmq.PUSH)
-        if self.opts.get('ipc_mode', '') == 'tcp':
-            pull_uri = 'tcp://127.0.0.1:{0}'.format(
-                self.opts.get('tcp_master_publish_pull', 4514)
-                )
-        else:
-            pull_uri = 'ipc://{0}'.format(
-                os.path.join(self.opts['sock_dir'], 'publish_pull.ipc')
-                )
-        pub_sock.connect(pull_uri)
+
         int_payload = {'payload': self.serial.dumps(payload)}
 
         # add some targeting stuff for lists only (for now)
@@ -837,9 +848,7 @@ class ZeroMQPubServerChannel(salt.transport.server.PubServerChannel):
             # Send list of miions thru so zmq can target them
             int_payload['topic_lst'] = match_ids
 
-        pub_sock.send(self.serial.dumps(int_payload))
-        pub_sock.close()
-        context.term()
+        self.pub_sock.send(self.serial.dumps(int_payload))
 
 
 # TODO: unit tests!
